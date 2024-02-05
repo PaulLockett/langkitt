@@ -26,7 +26,8 @@ from chatgpt import (
     ChatGPTMessageRole,
     ChatGPTPlugin,
 )
-from livekit.plugins.deepgram import STT
+from livekit.plugins.openai import STT
+from livekit.plugins.silero import VAD
 from livekit.plugins.elevenlabs import TTS
 
 PROMPT = "You are KITT, a friendly voice assistant powered by LiveKit.  \
@@ -67,6 +68,7 @@ class KITT:
             prompt=PROMPT, message_capacity=20, model="gpt-4-1106-preview"
         )
         self.stt_plugin = STT()
+        self.vad = VAD()
         self.tts_plugin = TTS(
             model_id="eleven_turbo_v2", sample_rate=ELEVEN_TTS_SAMPLE_RATE
         )
@@ -117,13 +119,14 @@ class KITT:
 
     async def process_track(self, track: rtc.Track):
         audio_stream = rtc.AudioStream(track)
-        stream = self.stt_plugin.stream()
-        self.ctx.create_task(self.process_stt_stream(stream))
-        async for audio_frame in audio_stream:
-            if self._agent_state != AgentState.LISTENING:
-                continue
-            stream.push_frame(audio_frame)
-        await stream.flush()
+        vad_stream = self.vad.stream(min_silence_duration=2.0)
+        stt = agents.stt.StreamAdapter(self.stt_plugin, vad_stream)
+        stt_stream = stt.stream()
+        self.ctx.create_task(self.stt_worker(stt_stream))
+
+        async for frame in audio_stream:
+            stt_stream.push_frame(frame)
+        await stt_stream.flush()
 
     async def process_stt_stream(self, stream):
         async for event in stream:
